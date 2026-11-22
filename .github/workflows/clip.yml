@@ -1,0 +1,117 @@
+name: Create vertical clips
+run-name: StreamCut video processing
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 'Authorized YouTube livestream/VOD or Twitch VOD HTTPS link'
+        required: true
+        type: string
+      start_seconds:
+        description: 'Begin scanning at this timestamp in seconds (0 = beginning)'
+        default: '0'
+        type: string
+      scan_minutes:
+        description: 'Minutes to scan: 1–1440. Start with 60; full-day scans use substantial compute.'
+        default: '60'
+        type: string
+      clip_count:
+        description: 'Requested distinct clips: 1–10 (may return fewer when speech is sparse)'
+        default: '8'
+        type: string
+      rights_confirmed:
+        description: 'I have permission to download, edit and reuse this footage under the source platform terms'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+concurrency:
+  group: streamcut-processing
+  cancel-in-progress: false
+env:
+  SOURCE_URL: ${{ inputs.source_url }}
+  RIGHTS_CONFIRMED: ${{ inputs.rights_confirmed }}
+  PYTHONUNBUFFERED: '1'
+  HF_HUB_DISABLE_PROGRESS_BARS: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - id: plan
+        env:
+          START: ${{ inputs.start_seconds }}
+          MINUTES: ${{ inputs.scan_minutes }}
+          COUNT: ${{ inputs.clip_count }}
+        run: python pipeline.py plan --start "$START" --minutes "$MINUTES" --count "$COUNT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-plan
+          path: work/plan.json
+          retention-days: 1
+  scan:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: true
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -r requirements.txt
+      - name: Transcribe and rank this window
+        env:
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+          CORE_END: ${{ matrix.core_end }}
+          INDEX: ${{ matrix.index }}
+        run: python pipeline.py scan --start "$START" --end "$END" --core-end "$CORE_END" --index "$INDEX"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidates-${{ matrix.index }}
+          path: output/candidates-*.json
+          if-no-files-found: error
+          retention-days: 1
+  render:
+    needs: scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidates-*
+          path: candidates
+          merge-multiple: true
+      - name: Render captioned 1080x1920 clips
+        env:
+          COUNT: ${{ inputs.clip_count }}
+        run: python pipeline.py render --count "$COUNT"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: streamcut-clips
+          path: output/
+          if-no-files-found: warn
+          retention-days: 1
+
