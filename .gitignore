@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+.env
+work/
+output/
+*.mp4
+*.wav
+*.zip
