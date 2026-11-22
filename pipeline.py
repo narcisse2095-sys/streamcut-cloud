@@ -56,12 +56,14 @@ def plan(args):
 def download(url, start, end, directory, audio=False):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(directory).free < 2 * 1024**3:
+        raise RuntimeError('Not enough free disk space for a bounded media section.')
     target = directory / 'source.%(ext)s'
     cmd = [sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-progress',
            '--no-cache-dir', '--socket-timeout', '30', '--retries', '1',
            '--fragment-retries', '1', '--abort-on-unavailable-fragments',
            '--download-sections', f'*{start:.3f}-{end:.3f}',
-           '--force-keyframes-at-cuts', '--max-filesize', '3G', '-o', target]
+           '--force-keyframes-at-cuts', '-o', target]
     if audio:
         cmd += ['-f', 'bestaudio/best', '-x', '--audio-format', 'wav']
     else:
